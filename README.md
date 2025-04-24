@@ -10,5 +10,6 @@ Script para implantação rápida de honeypot SSH para estudos de ciberseguranç
 
 ## Como usar
 ```bash
+nano install_cowrie.sh
 chmod +x install_cowrie.sh
 ./install_cowrie.sh
