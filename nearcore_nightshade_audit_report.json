@@ -1,0 +1,122 @@
+[
+  {
+    "file_path": "/tmp/nearcore/runtime/near-vm-runner/src/wasmtime_runner/logic.rs",
+    "line_number": 1884,
+    "severity": "CRITICAL",
+    "vulnerability_type": "Integer Overflow",
+    "description": "Multiplicação não verificada entre opcodes (u32) e regular_op_cost (u32) convertidos para u64. A operação 'opcodes as u64 * result_state.config.regular_op_cost as u64' não usa checked_mul, permitindo overflow silencioso que resultaria em um valor de gas MENOR que o esperado.",
+    "exploit_scenario": "1. Atacante cria contrato WASM malicioso que chama gas() com opcodes=u32::MAX (4,294,967,295)\n2. Com regular_op_cost=1000, a multiplicação 4,294,967,295 * 1000 causa overflow em u64\n3. O overflow resulta em valor de gas muito menor que o real\n4. Atacante executa computação complexa pagando gas mínimo\n5. Bypass completo do sistema de gas metering permite execução infinita com custo irrisório"
+  },
+  {
+    "file_path": "/tmp/nearcore/runtime/near-vm-runner/src/logic/logic.rs",
+    "line_number": 1822,
+    "severity": "CRITICAL",
+    "vulnerability_type": "Integer Overflow",
+    "description": "Duplicata da vulnerabilidade anterior em implementação diferente (VMLogic). Mesma multiplicação não verificada 'opcodes as u64 * self.config.regular_op_cost as u64' permite overflow em cálculo de gas.",
+    "exploit_scenario": "Idêntico ao cenário anterior: contrato malicioso com opcodes=u32::MAX bypassa metering de gas através de overflow, permitindo execução de computação infinita com custo mínimo."
+  },
+  {
+    "file_path": "/tmp/nearcore/runtime/near-vm-runner/src/logic/gas_counter.rs",
+    "line_number": 345,
+    "severity": "HIGH",
+    "vulnerability_type": "Panic DoS",
+    "description": "Função used_gas() usa checked_add seguido de unwrap(), causando panic se houver overflow: 'self.promises_gas.checked_add(Gas::from_gas(self.fast_counter.burnt_gas)).unwrap()'. Quando checked_add retorna None devido a overflow, o unwrap() causa crash do node.",
+    "exploit_scenario": "1. Atacante cria múltiplas promises com gas muito alto acumulando promises_gas próximo de u64::MAX\n2. Quando burnt_gas é adicionado, checked_add retorna None\n3. unwrap() causa panic e crash do node validador\n4. Repetindo o ataque em múltiplos validadores, atacante causa DoS da rede NEAR"
+  },
+  {
+    "file_path": "/tmp/nearcore/runtime/runtime/src/lib.rs",
+    "line_number": 967,
+    "severity": "CRITICAL",
+    "vulnerability_type": "Logic Error - Cross-Shard Receipt Atomicity",
+    "description": "Quando um receipt cross-shard falha, o refund é criado como um NOVO receipt separado que passa pelo mesmo sistema de comunicação cross-shard. Se o shard de destino do refund estiver offline ou com buffer cheio, o dinheiro fica preso indefinidamente. NÃO há timeout ou mecanismo de failover.",
+    "exploit_scenario": "1. Atacante envia transaction cross-shard com depósito grande de shard A → shard B\n2. Receipt falha no shard B (intencionalmente via invalid action)\n3. Sistema cria refund receipt de shard B → shard A\n4. Atacante manipula shard A para estar offline/congestionado\n5. Refund fica preso no buffer do shard B indefinidamente\n6. Fundos 'desaparecem' do sistema - não estão em nenhuma conta acessível"
+  },
+  {
+    "file_path": "/tmp/nearcore/runtime/runtime/src/congestion_control.rs",
+    "line_number": 457,
+    "severity": "HIGH",
+    "vulnerability_type": "Logic Error - Buffer Starvation",
+    "description": "Sistema usa buffering quando shard está congestionado, mas receipts em buffer (incluindo refunds) não têm garantia de entrega. Dependem de gas limits, bandwidth scheduler grants e shard de destino estar processando. Sem timeout ou mecanismo de retry.",
+    "exploit_scenario": "1. Atacante identifica shard com alto congestionamento persistente\n2. Envia múltiplas transactions que geram refunds para contas no shard congestionado\n3. Refunds entram em buffer devido a forward_limit.gas < gas ou forward_limit.size < size\n4. Buffer nunca esvazia devido a congestionamento contínuo\n5. Fundos dos usuários ficam bloqueados por tempo indeterminado"
+  },
+  {
+    "file_path": "/tmp/nearcore/runtime/runtime/src/lib.rs",
+    "line_number": 715,
+    "severity": "CRITICAL",
+    "vulnerability_type": "Logic Error - Double Burn",
+    "description": "Quando refund receipt falha (predecessor_id = 'system'), tokens são queimados. Mas tokens já foram debitados no receipt original. Isso causa dupla contabilização: (1) debit no receipt original, (2) burn no refund falhado. Perda permanente de fundos sem recuperação.",
+    "exploit_scenario": "1. Transaction A→B falha, cria refund receipt B→A com predecessor='system'\n2. Atacante deleta conta A antes do refund chegar (via DeleteAccount action)\n3. Refund receipt falha ao tentar depositar em conta inexistente\n4. Tokens são queimados permanentemente (linha 718-722)\n5. Total supply é reduzido sem autorização - deflação não planejada do protocolo"
+  },
+  {
+    "file_path": "/tmp/nearcore/runtime/runtime/src/lib.rs",
+    "line_number": 741,
+    "severity": "HIGH",
+    "vulnerability_type": "Race Condition - Cross-Shard State",
+    "description": "Commit/rollback de state_update é local ao shard sem coordenação cross-shard. Se receipt cross-shard causa commit no shard A mas rollback no shard B, o estado global fica inconsistente entre shards.",
+    "exploit_scenario": "1. Atacante envia transaction que cria receipt de shard A → shard B\n2. Receipt modifica estado em ambos os shards\n3. Shard A executa com sucesso → state_update.commit() (linha 742-745)\n4. Shard B falha → state_update.rollback() (linha 747)\n5. Estado global inconsistente: mudanças commitadas em A mas revertidas em B\n6. Validadores divergem na view do estado"
+  },
+  {
+    "file_path": "/tmp/nearcore/chain/client/src/chunk_executor_actor.rs",
+    "line_number": 396,
+    "severity": "CRITICAL",
+    "vulnerability_type": "Race Condition - TOCTOU",
+    "description": "TOCTOU entre chunk_extra_exists check (linha 396) e inserção em blocks_in_execution (linha 433). Window de race permite que dois chunks diferentes processem o mesmo bloco simultaneamente. blocks_in_execution é HashSet sem proteção atômica para check-then-insert.",
+    "exploit_scenario": "1. Thread A executa chunk_extra_exists(block_hash) → false (linha 396)\n2. Thread B executa chunk_extra_exists(block_hash) → false (mesma linha, antes de A inserir)\n3. Thread A passa verificação, inicia processamento\n4. Thread B também passa verificação, inicia processamento do MESMO bloco\n5. Linha 433: ambos inserem block_hash em blocks_in_execution\n6. Estado é aplicado duas vezes, causando desincronização de chunk_extra e execution_results"
+  },
+  {
+    "file_path": "/tmp/nearcore/chain/client/src/chunk_executor_actor.rs",
+    "line_number": 368,
+    "severity": "HIGH",
+    "vulnerability_type": "Race Condition - TOCTOU",
+    "description": "TOCTOU entre get_block_execution_results check e try_process_pending_unverified_receipts. Entre verificar que todos execution results existem e usar esses resultados, outro thread pode adicionar results parciais ou modificar estado de endorsements.",
+    "exploit_scenario": "1. Thread A: get_block_execution_results verifica shards [0,1] → retorna Some(results)\n2. Thread B: adiciona execution result para shard 2\n3. Thread A: usa prev_block_execution_results com visão parcial (sem shard 2)\n4. Thread A: processa chunks com estado inconsistente\n5. Receipt verification falha ou valida incorretamente devido a missing results\n6. Desincronização entre shards durante state transition"
+  },
+  {
+    "file_path": "/tmp/nearcore/chain/chain/src/spice_core_writer_actor.rs",
+    "line_number": 411,
+    "severity": "HIGH",
+    "vulnerability_type": "Race Condition - TOCTOU",
+    "description": "TOCTOU entre execution_result_is_known check (linha 411) e uso dessa informação (linha 424). Entre verificação e decisão de enviar ExecutionResultEndorsed, outro thread pode gravar o execution result, causando envio duplicado ou perda de mensagem.",
+    "exploit_scenario": "1. Thread A: execution_result_is_known check → false (linha 411)\n2. Thread B: grava execution result para mesmo chunk_id\n3. Thread A: grava endorsement e commit (linhas 416-419)\n4. Thread A: envia try_sending_execution_result_endorsed (linha 425-427)\n5. Thread B: também envia try_sending_execution_result_endorsed\n6. Mensagens duplicadas confundem chunk executors, estado de endorsements inconsistente"
+  },
+  {
+    "file_path": "/tmp/nearcore/chain/chain/src/spice_core_writer_actor.rs",
+    "line_number": 345,
+    "severity": "HIGH",
+    "vulnerability_type": "Race Condition - Lock Scope",
+    "description": "pending_endorsements.lock() guard é dropado imediatamente após cada operação. Não há atomicidade entre pop_pending_endorsement_for_block (linha 345) e add_pending_endorsement (linha 375). Race entre threads pode causar loss ou double-processing de endorsements.",
+    "exploit_scenario": "1. Thread A: pop_pending_endorsement_for_block obtém lock, pop endorsements para bloco X shard 0\n2. Thread A: lock é liberado após pop\n3. Thread B: novo endorsement chega para bloco X shard 0\n4. Thread B: add_pending_endorsement obtém lock e insere\n5. Thread A: processa endorsements antigos (perdeu os novos)\n6. Thread C: bloco X é reprocessado, pop pega endorsements que Thread A deveria processar\n7. Endorsements processados duas vezes ou perdidos, estado de certificação dessincronizado"
+  },
+  {
+    "file_path": "/tmp/nearcore/chain/chain/src/spice_core_writer_actor.rs",
+    "line_number": 134,
+    "severity": "CRITICAL",
+    "vulnerability_type": "Race Condition - Resharding",
+    "description": "TOCTOU entre all_execution_results_exist check e envio de ExecutionResultEndorsed. Durante resharding, verificação pode iterar shards antigos enquanto novos shards são adicionados. Mensagem é enviada com visão inconsistente de shard layout.",
+    "exploit_scenario": "1. Thread A: all_execution_results_exist itera shards [0,1,2] → todos existem (linha 134)\n2. RESHARDING: shard 2 é dividido em shards 2 e 3\n3. Thread B: adiciona execution result para novo shard 3\n4. Thread A: envia ExecutionResultEndorsed com visão antiga de shards\n5. Chunk executor recebe mensagem mas não consegue processar (falta shard 3)\n6. Chunk processing trava durante resharding, state desync entre validadores"
+  },
+  {
+    "file_path": "/tmp/nearcore/runtime/near-vm-runner/src/logic/gas_counter.rs",
+    "line_number": 131,
+    "severity": "HIGH",
+    "vulnerability_type": "Panic DoS",
+    "description": "checked_sub seguido de unwrap sem tratamento de erro: 'self.prepaid_gas.checked_sub(new_promises_gas).unwrap()'. Se new_promises_gas > prepaid_gas, checked_sub retorna None e unwrap causa panic do node.",
+    "exploit_scenario": "1. Atacante cria transaction com prepaid_gas próximo do limite\n2. Cria múltiplas promises cuja soma de gas (new_promises_gas) excede prepaid_gas\n3. checked_sub retorna None quando new_promises_gas > prepaid_gas\n4. unwrap() causa panic do node validador\n5. DoS do validador, repetindo em múltiplos nodes compromete disponibilidade da rede"
+  },
+  {
+    "file_path": "/tmp/nearcore/runtime/runtime/src/receipt_manager.rs",
+    "line_number": 637,
+    "severity": "HIGH",
+    "vulnerability_type": "Integer Underflow",
+    "description": "Uso de wrapping_sub permite underflow silencioso: 'unused_gas.as_gas().wrapping_sub(distributed)'. Se distributed > unused_gas devido a imprecisões de arredondamento, wrapping_sub resulta em valor próximo de u64::MAX, atribuindo gas excessivo à última action.",
+    "exploit_scenario": "1. Atacante cria transaction com múltiplas actions que causam imprecisões de arredondamento em distribuição de gas\n2. Soma de gas distribuído (distributed) excede unused_gas ligeiramente\n3. wrapping_sub(distributed) underflow resulta em remainder ≈ u64::MAX\n4. Última action recebe gas 'grátis' massivo (linha 641)\n5. Action executa com gas muito além do pago, violando economic security"
+  },
+  {
+    "file_path": "/tmp/nearcore/runtime/near-vm-runner/src/profile.rs",
+    "line_number": 133,
+    "severity": "HIGH",
+    "vulnerability_type": "Panic DoS",
+    "description": "Divisão direta sem verificação de divisor zero em produção. Há debug_assert na linha 131, mas só funciona em builds de debug. Se key.gas(ext_costs_config) retornar Gas::ZERO em produção, divisão causa panic.",
+    "exploit_scenario": "1. Atacante identifica configuração de ext_costs onde key.gas() pode retornar zero\n2. Submete contrato que aciona código de profiling com essa key específica\n3. Em build de produção (sem debug_assert), divisão por zero causa panic\n4. Node validador crasha\n5. Repetindo em múltiplos validadores causa DoS da rede"
+  }
+]
